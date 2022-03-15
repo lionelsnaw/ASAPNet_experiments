@@ -1,0 +1,128 @@
+"""
+Copyright (C) 2019 NVIDIA Corporation.  All rights reserved.
+Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode).
+"""
+
+import os
+import sys
+import data
+import torch
+
+from tqdm import tqdm
+from util.visualizer import Visualizer
+from util.iter_counter import IterationCounter
+from collections import OrderedDict
+from ignite.metrics import FID, PSNR, SSIM
+from options.train_options import TrainOptions
+from trainers.pix2pix_trainer import Pix2PixTrainer
+from torch.utils.tensorboard import SummaryWriter
+
+
+# parse options
+opt = TrainOptions().parse()
+
+# # FIXME
+# opt.batchSize = 4
+# # opt.no_instance_edge = False
+# # opt.no_instance_dist = True
+# opt.gpu_ids = [0,1]
+# # opt.label_nc = 3
+# # opt.no_one_hot = True
+# # opt.name = 'textest_cityscapes'
+# opt.name = 'cityscapes_512'
+# # opt.semantic_nc = opt.label_nc
+# # opt.no_instance = opt.no_instance_edge
+# # opt.dataset_mode = 'deblur'
+# opt.display_freq = 1
+# opt.dataroot = '/home/msavinov/Documents/ASAPNet_experiments/datasets/cityscapes'
+
+# print options to help debugging
+print(' '.join(sys.argv))
+
+# create writer
+writer = SummaryWriter(os.path.join('checkpoints', opt.name, 'runs'))
+
+# load the dataset
+dataloader = data.create_dataloader(opt)
+
+# create trainer for our model
+trainer = Pix2PixTrainer(opt)
+
+# create tool for counting iterations
+iter_counter = IterationCounter(opt, len(dataloader))
+
+# create tool for visualization
+visualizer = Visualizer(opt)
+
+# create metrics
+metric_fid = FID(device='cuda')
+metric_psnr = PSNR(data_range=2, device='cuda')
+metric_ssim = SSIM(data_range=2, device='cuda')
+
+for epoch in tqdm(iter_counter.training_epochs()):
+    iter_counter.record_epoch_start(epoch)
+    for i, data_i in enumerate(dataloader, start=iter_counter.epoch_iter):
+        iter_counter.record_one_iteration()
+
+        # Training
+        # train generator
+        if (opt.D_steps_per_G == 0):
+            trainer.run_generator_one_step(data_i)
+        elif (i % opt.D_steps_per_G == 0):
+            trainer.run_generator_one_step(data_i)
+
+        # train discriminator
+        if (opt.D_steps_per_G != 0):
+            trainer.run_discriminator_one_step(data_i)
+        
+        metric_fid.update([trainer.get_latest_generated(), data_i['image'].cuda()])
+        metric_psnr.update([trainer.get_latest_generated(), data_i['image'].cuda()])
+        metric_ssim.update([trainer.get_latest_generated(), data_i['image'].cuda()])
+
+        # Visualizations
+        if iter_counter.needs_printing():
+            losses = trainer.get_latest_losses(opt.D_steps_per_G)
+            visualizer.print_current_errors(epoch, iter_counter.epoch_iter,
+                                            losses, iter_counter.time_per_iter)
+            visualizer.plot_current_errors(losses, iter_counter.total_steps_so_far)
+
+            for loss in losses.keys():
+                writer.add_scalar(f'Loss/{loss}', torch.mean(losses[loss]), iter_counter.total_steps_so_far)
+
+        if iter_counter.needs_displaying():
+            fid = metric_fid.compute()
+            psnr = metric_psnr.compute()
+            ssim = metric_ssim.compute()
+            
+            writer.add_scalar('Metrics/FID', fid, iter_counter.total_steps_so_far)
+            writer.add_scalar('Metrics/PSNR', psnr, iter_counter.total_steps_so_far)
+            writer.add_scalar('Metrics/SSIM', ssim, iter_counter.total_steps_so_far)
+            
+            visuals = OrderedDict([('input_label', data_i['label']),
+                                   ('synthesized_image',
+                                    trainer.get_latest_generated()),
+                                   ('real_image', data_i['image'])])
+            visuals = visualizer.convert_visuals_to_numpy(visuals)
+            
+            writer.add_images('synthesized_image', visuals['synthesized_image'], iter_counter.total_steps_so_far, dataformats='NHWC')
+            writer.add_images('real_image', visuals['real_image'], iter_counter.total_steps_so_far, dataformats='NHWC')
+            writer.add_images('input_label', visuals['input_label'], iter_counter.total_steps_so_far, dataformats='HWC')
+
+        if iter_counter.needs_saving():
+            print('saving the latest model (epoch %d, total_steps %d)' % (epoch, iter_counter.total_steps_so_far))
+            trainer.save('latest')
+            iter_counter.record_current_iter()
+    
+    metric_fid.reset()
+    metric_psnr.reset()
+    metric_ssim.reset()
+
+    trainer.update_learning_rate(epoch)
+    iter_counter.record_epoch_end()
+
+    if epoch % opt.save_epoch_freq == 0 or \
+       epoch == iter_counter.total_epochs:
+        print('saving the model at the end of epoch %d, iters %d' % (epoch, iter_counter.total_steps_so_far))
+        trainer.save('latest')
+
+print('Training was successfully finished.')
