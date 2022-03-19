@@ -39,6 +39,7 @@ if opt.debug:
     opt.niter = 1
     opt.niter_decay = 0
     opt.max_dataset_size = 10
+    opt.save_epoch_freq = 1
 
 data_loader = CreateDataLoader(opt)
 dataset = data_loader.load_data()
@@ -77,12 +78,9 @@ total_loss = {'G_GAN': torch.tensor(.0), 'G_GAN_Feat': torch.tensor(.0), 'G_VGG'
               'D_fake': torch.tensor(.0), 'D_real': torch.tensor(.0), 'count': 0}
 
 for epoch in tqdm(range(start_epoch, opt.niter + opt.niter_decay + 1)):
-    # epoch_start_time = time.time()
     if epoch != start_epoch:
         epoch_iter = epoch_iter % dataset_size
     for i, data in enumerate(dataset, start=epoch_iter):
-        # if total_steps % opt.print_freq == print_delta:
-        #     iter_start_time = time.time()
         total_steps += opt.batchSize
         epoch_iter += opt.batchSize
 

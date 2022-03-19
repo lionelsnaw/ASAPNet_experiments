@@ -47,11 +47,8 @@ else:
     from run_engine import run_trt_engine, run_onnx
 
 iter_dataloader = iter(dataset)
-# for i, data in enumerate(dataset):
 for i in tqdm(range(len(dataset))):
     data = next(iter_dataloader)
-    if i >= opt.how_many:
-        break
     if opt.data_type == 16:
         data['label'] = data['label'].half()
         data['inst']  = data['inst'].half()
