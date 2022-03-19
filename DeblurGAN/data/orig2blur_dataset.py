@@ -1,6 +1,6 @@
 import os
+import random
 import kornia as K
-import numpy as np
 from PIL import Image
 from data.image_folder import make_dataset
 from data.base_dataset import BaseDataset, get_transform
@@ -22,20 +22,17 @@ class Orig2BlurDataset(BaseDataset):
         A_path = self.A_paths[index % self.A_size]
         B_path = ''
         A_img = Image.open(A_path)
+        A_img = self.transform(A_img)
         
         if self.opt.isTrain:
-            kernel_size = np.random.randint(2, 10)
-            angle = np.random.randint(0, 180)
-            direction = np.random.rand() * 2 - 1
-            B_img = K.filters.motion_blur(A_img, kernel_size, angle, direction)
+            kernel_size = random.randrange(3, 14, 2)
+            angle = random.randint(-180, 180)
+            direction = random.uniform(-1, 1)
+            B_img = K.filters.motion_blur(A_img.unsqueeze(0), kernel_size, angle, direction).squeeze(0)
         else:
-            B_img = K.filters.motion_blur(A_img, 9, 90., 1)
-        
-        A_img = self.transform(A_img)
-        B_img = self.transform(B_img)
+            B_img = K.filters.motion_blur(A_img.unsqueeze(0), 9, 90., 1).squeeze(0)
 
-        return {'A': A_img, 'B': B_img,
-                'A_paths': A_path, 'B_paths': B_path}
+        return {'A': A_img, 'B': B_img, 'A_paths': A_path, 'B_paths': B_path}
 
     def __len__(self):
         return self.A_size

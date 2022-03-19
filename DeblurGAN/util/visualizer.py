@@ -129,9 +129,9 @@ class Visualizer():
         links = []
 
         for label, image_numpy in visuals.items():
-            image_name = '%s_%s.png' % (name, label)
+            image_name = os.path.join(label, '%s.png' % (name))
             save_path = os.path.join(image_dir, image_name)
-            util.save_image(image_numpy, save_path)
+            util.save_image(image_numpy, save_path, create_dir=True)
 
             ims.append(image_name)
             txts.append(label)

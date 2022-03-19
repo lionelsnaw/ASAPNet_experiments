@@ -45,4 +45,5 @@ class TestModel(BaseModel):
     def get_current_visuals(self):
         real_A = util.tensor2im(self.real_A.data)
         fake_B = util.tensor2im(self.fake_B.data)
-        return OrderedDict([('real_A', real_A), ('fake_B', fake_B)])
+        real_B = util.tensor2im(self.real_B.data)
+        return OrderedDict([('input_label', real_A), ('synthesized_image', fake_B), ('gt', real_B)])

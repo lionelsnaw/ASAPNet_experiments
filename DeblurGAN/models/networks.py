@@ -4,6 +4,7 @@ import torch.nn as nn
 import functools
 # from torch.autograd import Variable
 import numpy as np
+from models.networks_asapnet.generator import ASAPNetsGenerator
 
 
 ###############################################################################
@@ -33,7 +34,7 @@ def get_norm_layer(norm_type='instance'):
 
 
 def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropout=False, gpu_ids=[], use_parallel=True,
-             learn_residual=False):
+             learn_residual=False, opt=None):
     netG = None
     use_gpu = len(gpu_ids) > 0
     norm_layer = get_norm_layer(norm_type=norm)
@@ -54,8 +55,7 @@ def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropo
         netG = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout,
                              gpu_ids=gpu_ids, use_parallel=use_parallel, learn_residual=learn_residual)
     elif which_model_netG == 'asapnet':
-        netG = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout,
-                             gpu_ids=gpu_ids, use_parallel=use_parallel, learn_residual=learn_residual)
+        netG = ASAPNetsGenerator(opt)
     else:
         raise NotImplementedError('Generator model name [%s] is not recognized' % which_model_netG)
     if len(gpu_ids) > 0:
@@ -65,7 +65,7 @@ def define_G(input_nc, output_nc, ngf, which_model_netG, norm='batch', use_dropo
 
 
 def define_D(input_nc, ndf, which_model_netD, n_layers_D=3, norm='batch', use_sigmoid=False, gpu_ids=[],
-             use_parallel=True):
+             use_parallel=True, opt=None):
     netD = None
     use_gpu = len(gpu_ids) > 0
     norm_layer = get_norm_layer(norm_type=norm)
@@ -78,9 +78,6 @@ def define_D(input_nc, ndf, which_model_netD, n_layers_D=3, norm='batch', use_si
     elif which_model_netD == 'n_layers':
         netD = NLayerDiscriminator(input_nc, ndf, n_layers_D, norm_layer=norm_layer, use_sigmoid=use_sigmoid,
                                    gpu_ids=gpu_ids, use_parallel=use_parallel)
-    elif which_model_netD == 'asapnet':
-        netG = UnetGenerator(input_nc, output_nc, 8, ngf, norm_layer=norm_layer, use_dropout=use_dropout,
-                             gpu_ids=gpu_ids, use_parallel=use_parallel, learn_residual=learn_residual)
     else:
         raise NotImplementedError('Discriminator model name [%s] is not recognized' % which_model_netD)
     if use_gpu:
