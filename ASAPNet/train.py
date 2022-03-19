@@ -6,13 +6,14 @@ Licensed under the CC BY-NC-SA 4.0 license (https://creativecommons.org/licenses
 import os
 import sys
 import data
+import copy
 import torch
 
 from tqdm import tqdm
 from util.visualizer import Visualizer
 from util.iter_counter import IterationCounter
 from collections import OrderedDict
-from ignite.metrics import FID, PSNR, SSIM
+from util.metrics import FID, PSNR, SSIM
 from options.train_options import TrainOptions
 from trainers.pix2pix_trainer import Pix2PixTrainer
 from torch.utils.tensorboard import SummaryWriter
@@ -20,21 +21,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 # parse options
 opt = TrainOptions().parse()
-
-# # FIXME
-# opt.batchSize = 4
-# # opt.no_instance_edge = False
-# # opt.no_instance_dist = True
-# opt.gpu_ids = [0,1]
-# # opt.label_nc = 3
-# # opt.no_one_hot = True
-# # opt.name = 'textest_cityscapes'
-# opt.name = 'cityscapes_512'
-# # opt.semantic_nc = opt.label_nc
-# # opt.no_instance = opt.no_instance_edge
-# # opt.dataset_mode = 'deblur'
-# opt.display_freq = 1
-# opt.dataroot = '/home/msavinov/Documents/ASAPNet_experiments/datasets/cityscapes'
 
 # print options to help debugging
 print(' '.join(sys.argv))
@@ -44,6 +30,9 @@ writer = SummaryWriter(os.path.join('checkpoints', opt.name, 'runs'))
 
 # load the dataset
 dataloader = data.create_dataloader(opt)
+opt_test = copy.deepcopy(opt)
+opt_test.phase = 'test'
+dataloader_test = data.create_dataloader(opt_test)
 
 # create trainer for our model
 trainer = Pix2PixTrainer(opt)
@@ -58,6 +47,10 @@ visualizer = Visualizer(opt)
 metric_fid = FID(device='cuda')
 metric_psnr = PSNR(data_range=2, device='cuda')
 metric_ssim = SSIM(data_range=2, device='cuda')
+
+# create loss couter
+total_loss = {'GAN': torch.tensor(.0), 'GAN_Feat': torch.tensor(.0), 'VGG': torch.tensor(.0),
+              'D_Fake': torch.tensor(.0), 'D_real': torch.tensor(.0), 'count': 0}
 
 for epoch in tqdm(iter_counter.training_epochs()):
     iter_counter.record_epoch_start(epoch)
@@ -74,30 +67,20 @@ for epoch in tqdm(iter_counter.training_epochs()):
         # train discriminator
         if (opt.D_steps_per_G != 0):
             trainer.run_discriminator_one_step(data_i)
-        
-        metric_fid.update([trainer.get_latest_generated(), data_i['image'].cuda()])
-        metric_psnr.update([trainer.get_latest_generated(), data_i['image'].cuda()])
-        metric_ssim.update([trainer.get_latest_generated(), data_i['image'].cuda()])
+
+        losses = trainer.get_latest_losses(opt.D_steps_per_G)
+        for key in losses.keys():
+            total_loss[key] += losses[key].detach().mean().cpu()
+        total_loss['count'] += 1
 
         # Visualizations
         if iter_counter.needs_printing():
-            losses = trainer.get_latest_losses(opt.D_steps_per_G)
-            visualizer.print_current_errors(epoch, iter_counter.epoch_iter,
-                                            losses, iter_counter.time_per_iter)
-            visualizer.plot_current_errors(losses, iter_counter.total_steps_so_far)
-
-            for loss in losses.keys():
-                writer.add_scalar(f'Loss/{loss}', torch.mean(losses[loss]), iter_counter.total_steps_so_far)
+            for key in losses.keys():
+                writer.add_scalar(f'Loss/{key}', total_loss[key] / total_loss['count'], iter_counter.total_steps_so_far)
+                total_loss[key] = 0
+            total_loss['count'] = 0
 
         if iter_counter.needs_displaying():
-            fid = metric_fid.compute()
-            psnr = metric_psnr.compute()
-            ssim = metric_ssim.compute()
-            
-            writer.add_scalar('Metrics/FID', fid, iter_counter.total_steps_so_far)
-            writer.add_scalar('Metrics/PSNR', psnr, iter_counter.total_steps_so_far)
-            writer.add_scalar('Metrics/SSIM', ssim, iter_counter.total_steps_so_far)
-            
             visuals = OrderedDict([('input_label', data_i['label']),
                                    ('synthesized_image',
                                     trainer.get_latest_generated()),
@@ -113,9 +96,29 @@ for epoch in tqdm(iter_counter.training_epochs()):
             trainer.save('latest')
             iter_counter.record_current_iter()
     
+    model = trainer.pix2pix_model
+    model.eval()
+    for i, data_i in enumerate(dataloader_test):
+        with torch.no_grad():
+            im = data_i['image'].cuda()
+            _, generated = model(data_i, mode='generator')
+            metric_fid.update([generated, im])
+            metric_psnr.update([generated, im])
+            metric_ssim.update([generated, im])
+    model.train()
+    
+    fid = metric_fid.compute()
+    psnr = metric_psnr.compute()
+    ssim = metric_ssim.compute()
+    
     metric_fid.reset()
     metric_psnr.reset()
     metric_ssim.reset()
+    
+    writer.add_scalar('Metrics/FID', fid, epoch)
+    writer.add_scalar('Metrics/PSNR', psnr, epoch)
+    writer.add_scalar('Metrics/SSIM', ssim, epoch)
+    writer.flush()
 
     trainer.update_learning_rate(epoch)
     iter_counter.record_epoch_end()
@@ -124,5 +127,6 @@ for epoch in tqdm(iter_counter.training_epochs()):
        epoch == iter_counter.total_epochs:
         print('saving the model at the end of epoch %d, iters %d' % (epoch, iter_counter.total_steps_so_far))
         trainer.save('latest')
+        trainer.save(epoch)
 
 print('Training was successfully finished.')

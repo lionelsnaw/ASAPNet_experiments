@@ -10,9 +10,9 @@ unzip -qn leftImg8bit_trainvaltest.zip
 mkdir test_img test_inst test_label
 mkdir train_img train_inst train_label
 
-cp gtFine/test/*/*inst* test_inst/
-cp gtFine/test/*/*label* test_label/
-cp leftImg8bit/test/*/*Img8bit* test_img/
+cp gtFine/val/*/*inst* test_inst/
+cp gtFine/val/*/*label* test_label/
+cp leftImg8bit/val/*/*Img8bit* test_img/
 
 cp gtFine/train/*/*inst* train_inst/
 cp gtFine/train/*/*label* train_label/
