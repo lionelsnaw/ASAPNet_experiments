@@ -1,20 +1,27 @@
-import time
 import os
-import numpy as np
+import copy
+import time
 import torch
+import numpy as np
+import util.util as util
+
+from tqdm import tqdm
 from torch.autograd import Variable
 from collections import OrderedDict
-from subprocess import call
-import fractions
-def lcm(a,b): return abs(a * b)/fractions.gcd(a,b) if a and b else 0
+def lcm(a,b): return abs(a * b)/np.gcd(a,b) if a and b else 0
 
 from options.train_options import TrainOptions
 from data.data_loader import CreateDataLoader
 from models.models import create_model
-import util.util as util
 from util.visualizer import Visualizer
+from util.metrics import FID, PSNR, SSIM
+from torch.utils.tensorboard import SummaryWriter
+
 
 opt = TrainOptions().parse()
+
+writer = SummaryWriter(os.path.join('checkpoints', opt.name, 'runs'))
+
 iter_path = os.path.join(opt.checkpoints_dir, opt.name, 'iter.txt')
 if opt.continue_train:
     try:
@@ -38,6 +45,13 @@ dataset = data_loader.load_data()
 dataset_size = len(data_loader)
 print('#training images = %d' % dataset_size)
 
+opt_test = copy.deepcopy(opt)
+opt_test.phase = 'test'
+data_loader_test = CreateDataLoader(opt_test)
+dataset_test = data_loader_test.load_data()
+dataset_test_size = len(data_loader_test)
+print('#test images = %d' % dataset_test_size)
+
 model = create_model(opt)
 visualizer = Visualizer(opt)
 if opt.fp16:    
@@ -53,13 +67,22 @@ display_delta = total_steps % opt.display_freq
 print_delta = total_steps % opt.print_freq
 save_delta = total_steps % opt.save_latest_freq
 
-for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
-    epoch_start_time = time.time()
+# create metrics
+metric_fid = FID(device='cuda')
+metric_psnr = PSNR(data_range=2, device='cuda')
+metric_ssim = SSIM(data_range=2, device='cuda')
+
+# create loss couter
+total_loss = {'G_GAN': torch.tensor(.0), 'G_GAN_Feat': torch.tensor(.0), 'G_VGG': torch.tensor(.0),
+              'D_fake': torch.tensor(.0), 'D_real': torch.tensor(.0), 'count': 0}
+
+for epoch in tqdm(range(start_epoch, opt.niter + opt.niter_decay + 1)):
+    # epoch_start_time = time.time()
     if epoch != start_epoch:
         epoch_iter = epoch_iter % dataset_size
     for i, data in enumerate(dataset, start=epoch_iter):
-        if total_steps % opt.print_freq == print_delta:
-            iter_start_time = time.time()
+        # if total_steps % opt.print_freq == print_delta:
+        #     iter_start_time = time.time()
         total_steps += opt.batchSize
         epoch_iter += opt.batchSize
 
@@ -93,23 +116,33 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
             with amp.scale_loss(loss_D, optimizer_D) as scaled_loss: scaled_loss.backward()                
         else:
             loss_D.backward()        
-        optimizer_D.step()        
+        optimizer_D.step()      
+        
+        for key in loss_dict.keys():
+            total_loss[key] += loss_dict[key].detach().mean().cpu()
+        total_loss['count'] += 1  
 
         ############## Display results and errors ##########
         ### print out errors
         if total_steps % opt.print_freq == print_delta:
-            errors = {k: v.data.item() if not isinstance(v, int) else v for k, v in loss_dict.items()}            
-            t = (time.time() - iter_start_time) / opt.print_freq
-            visualizer.print_current_errors(epoch, epoch_iter, errors, t)
-            visualizer.plot_current_errors(errors, total_steps)
-            #call(["nvidia-smi", "--format=csv", "--query-gpu=memory.used,memory.free"]) 
+            for key in loss_dict.keys():
+                writer.add_scalar(f'Loss/{key}', total_loss[key] / total_loss['count'], total_steps)
+                total_loss[key] = 0
+            total_loss['count'] = 0
 
         ### display output images
         if save_fake:
-            visuals = OrderedDict([('input_label', util.tensor2label(data['label'][0], opt.label_nc)),
-                                   ('synthesized_image', util.tensor2im(generated.data[0])),
-                                   ('real_image', util.tensor2im(data['image'][0]))])
-            visualizer.display_current_results(visuals, epoch, total_steps)
+            input_label = []
+            synthesized_image = []
+            real_image = []
+            for i in range(len(data['label'])):
+                input_label.append(util.tensor2label(data['label'][i], opt.label_nc))
+                synthesized_image.append(util.tensor2im(generated.data[i]))
+                real_image.append(util.tensor2im(data['image'][i]))
+            
+            writer.add_images('synthesized_image', np.asarray(synthesized_image), total_steps, dataformats='NHWC')
+            writer.add_images('real_image', np.asarray(real_image), total_steps, dataformats='NHWC')
+            writer.add_images('input_label', np.asarray(input_label), total_steps, dataformats='NHWC')
 
         ### save latest model
         if total_steps % opt.save_latest_freq == save_delta:
@@ -120,10 +153,30 @@ for epoch in range(start_epoch, opt.niter + opt.niter_decay + 1):
         if epoch_iter >= dataset_size:
             break
        
-    # end of epoch 
-    iter_end_time = time.time()
-    print('End of epoch %d / %d \t Time Taken: %d sec' %
-          (epoch, opt.niter + opt.niter_decay, time.time() - epoch_start_time))
+    # end of epoch
+    model.eval()
+    for i, data in enumerate(dataset_test):
+        with torch.no_grad():
+            losses, generated = model(Variable(data['label']), Variable(data['inst']), 
+                            Variable(data['image']), Variable(data['feat']), infer=True)
+            im = data['image'].cuda()
+            metric_fid.update([generated, im])
+            metric_psnr.update([generated, im])
+            metric_ssim.update([generated, im])
+    model.train()
+    
+    fid = metric_fid.compute()
+    psnr = metric_psnr.compute()
+    ssim = metric_ssim.compute()
+    
+    metric_fid.reset()
+    metric_psnr.reset()
+    metric_ssim.reset()
+    
+    writer.add_scalar('Metrics/FID', fid, epoch)
+    writer.add_scalar('Metrics/PSNR', psnr, epoch)
+    writer.add_scalar('Metrics/SSIM', ssim, epoch)
+    writer.flush()
 
     ### save model for this epoch
     if epoch % opt.save_epoch_freq == 0:

@@ -34,7 +34,9 @@ def tensor2label(label_tensor, n_label, imtype=np.uint8):
     label_numpy = np.transpose(label_tensor.numpy(), (1, 2, 0))
     return label_numpy.astype(imtype)
 
-def save_image(image_numpy, image_path):
+def save_image(image_numpy, image_path, create_dir=True):
+    if create_dir:
+        os.makedirs(os.path.dirname(image_path), exist_ok=True)
     image_pil = Image.fromarray(image_numpy)
     image_pil.save(image_path)
 

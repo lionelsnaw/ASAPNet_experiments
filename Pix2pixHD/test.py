@@ -1,243 +1,16 @@
 import os
+import time
+import torch
+import util.util as util
+
+from util import html
+from tqdm import tqdm
 from collections import OrderedDict
-from torch.autograd import Variable
 from options.test_options import TestOptions
 from data.data_loader import CreateDataLoader
 from models.models import create_model
-import util.util as util
 from util.visualizer import Visualizer
-from util import html
-import torch
-
-
-
-
-
-
-
-
-
-
-
-
-
-import numpy as np
-import torch
-from ignite.metrics import FID
-from pytorch_fid import fid_score, inception
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision
-from scipy import linalg
-from torch.utils.tensorboard import SummaryWriter
-
-
-class InceptionV3(nn.Module):
-    """Pretrained InceptionV3 network returning feature maps"""
-
-    # Index of default block of inception to return,
-    # corresponds to output of final average pooling
-    DEFAULT_BLOCK_INDEX = 3
-
-    # Maps feature dimensionality to their output blocks indices
-    BLOCK_INDEX_BY_DIM = {
-        64: 0,   # First max pooling features
-        192: 1,  # Second max pooling featurs
-        768: 2,  # Pre-aux classifier features
-        2048: 3  # Final average pooling features
-    }
-
-    def __init__(self,
-                 output_blocks=[DEFAULT_BLOCK_INDEX],
-                 resize_input=True,
-                 normalize_input=True,
-                 requires_grad=False):
-        
-        super(InceptionV3, self).__init__()
-
-        self.resize_input = resize_input
-        self.normalize_input = normalize_input
-        self.output_blocks = sorted(output_blocks)
-        self.last_needed_block = max(output_blocks)
-
-        assert self.last_needed_block <= 3, \
-            'Last possible output block index is 3'
-
-        self.blocks = nn.ModuleList()
-
-        
-        inception = torchvision.models.inception_v3(pretrained=True)
-
-        # Block 0: input to maxpool1
-        block0 = [
-            inception.Conv2d_1a_3x3,
-            inception.Conv2d_2a_3x3,
-            inception.Conv2d_2b_3x3,
-            nn.MaxPool2d(kernel_size=3, stride=2)
-        ]
-        self.blocks.append(nn.Sequential(*block0))
-
-        # Block 1: maxpool1 to maxpool2
-        if self.last_needed_block >= 1:
-            block1 = [
-                inception.Conv2d_3b_1x1,
-                inception.Conv2d_4a_3x3,
-                nn.MaxPool2d(kernel_size=3, stride=2)
-            ]
-            self.blocks.append(nn.Sequential(*block1))
-
-        # Block 2: maxpool2 to aux classifier
-        if self.last_needed_block >= 2:
-            block2 = [
-                inception.Mixed_5b,
-                inception.Mixed_5c,
-                inception.Mixed_5d,
-                inception.Mixed_6a,
-                inception.Mixed_6b,
-                inception.Mixed_6c,
-                inception.Mixed_6d,
-                inception.Mixed_6e,
-            ]
-            self.blocks.append(nn.Sequential(*block2))
-
-        # Block 3: aux classifier to final avgpool
-        if self.last_needed_block >= 3:
-            block3 = [
-                inception.Mixed_7a,
-                inception.Mixed_7b,
-                inception.Mixed_7c,
-                nn.AdaptiveAvgPool2d(output_size=(1, 1))
-            ]
-            self.blocks.append(nn.Sequential(*block3))
-
-        for param in self.parameters():
-            param.requires_grad = requires_grad
-
-    def forward(self, inp):
-        """Get Inception feature maps
-        Parameters
-        ----------
-        inp : torch.autograd.Variable
-            Input tensor of shape Bx3xHxW. Values are expected to be in
-            range (0, 1)
-        Returns
-        -------
-        List of torch.autograd.Variable, corresponding to the selected output
-        block, sorted ascending by index
-        """
-        outp = []
-        x = inp
-
-        if self.resize_input:
-            x = F.interpolate(x,
-                              size=(299, 299),
-                              mode='bilinear',
-                              align_corners=False)
-
-        if self.normalize_input:
-            x = 2 * x - 1  # Scale from range (0, 1) to range (-1, 1)
-
-        for idx, block in enumerate(self.blocks):
-            x = block(x)
-            if idx in self.output_blocks:
-                outp.append(x)
-
-            if idx == self.last_needed_block:
-                break
-
-        return outp
-    
-block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[2048]
-model_InceptionV3 = InceptionV3([block_idx])
-model_InceptionV3 = model_InceptionV3.cuda()
-
-def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
-    """Numpy implementation of the Frechet Distance.
-    The Frechet distance between two multivariate Gaussians X_1 ~ N(mu_1, C_1)
-    and X_2 ~ N(mu_2, C_2) is
-            d^2 = ||mu_1 - mu_2||^2 + Tr(C_1 + C_2 - 2*sqrt(C_1*C_2)).
-    """
-
-    mu1 = np.atleast_1d(mu1)
-    mu2 = np.atleast_1d(mu2)
-
-    sigma1 = np.atleast_2d(sigma1)
-    sigma2 = np.atleast_2d(sigma2)
-
-    assert mu1.shape == mu2.shape, \
-        'Training and test mean vectors have different lengths'
-    assert sigma1.shape == sigma2.shape, \
-        'Training and test covariances have different dimensions'
-
-    diff = mu1 - mu2
-
-    
-    covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
-    if not np.isfinite(covmean).all():
-        msg = ('fid calculation produces singular product; '
-               'adding %s to diagonal of cov estimates') % eps
-        print(msg)
-        offset = np.eye(sigma1.shape[0]) * eps
-        covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
-
-    
-    if np.iscomplexobj(covmean):
-        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
-            m = np.max(np.abs(covmean.imag))
-            raise ValueError('Imaginary component {}'.format(m))
-        covmean = covmean.real
-
-    tr_covmean = np.trace(covmean)
-
-    return (diff.dot(diff) + np.trace(sigma1) +
-            np.trace(sigma2) - 2 * tr_covmean)
-
-def calculate_activation_statistics(images,model,batch_size=128, dims=2048,
-                    cuda=False):
-    model.eval()
-    act=np.empty((len(images), dims))
-    
-    if cuda:
-        batch=images.cuda()
-    else:
-        batch=images
-    pred = model(batch)[0]
-
-        # If model output is not scalar, apply global spatial average pooling.
-        # This happens if you choose a dimensionality not equal 2048.
-    if pred.size(2) != 1 or pred.size(3) != 1:
-        pred = F.adaptive_avg_pool2d(pred, output_size=(1, 1))
-
-    act= pred.cpu().data.numpy().reshape(pred.size(0), -1)
-    
-    mu = np.mean(act, axis=0)
-    sigma = np.cov(act, rowvar=False)
-    return mu, sigma
-
-def calculate_fretchet(images_real,images_fake,model):
-     mu_1,std_1=calculate_activation_statistics(images_real,model,cuda=True)
-     mu_2,std_2=calculate_activation_statistics(images_fake,model,cuda=True)
-    
-     """get fretched distance"""
-     fid_value = calculate_frechet_distance(mu_1, std_1, mu_2, std_2)
-     return fid_value
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+from util.metrics import PSNR, SSIM, FID
 
 
 opt = TestOptions().parse(save=False)
@@ -253,6 +26,13 @@ visualizer = Visualizer(opt)
 web_dir = os.path.join(opt.results_dir, opt.name, '%s_%s' % (opt.phase, opt.which_epoch))
 webpage = html.HTML(web_dir, 'Experiment = %s, Phase = %s, Epoch = %s' % (opt.name, opt.phase, opt.which_epoch))
 
+# create metrics
+metric_fid = FID(device='cuda')
+metric_psnr = PSNR(data_range=2, device='cuda')
+metric_ssim = SSIM(data_range=2, device='cuda')
+
+time_total = 0
+
 # test
 if not opt.engine and not opt.onnx:
     model = create_model(opt)
@@ -265,8 +45,11 @@ if not opt.engine and not opt.onnx:
         print(model)
 else:
     from run_engine import run_trt_engine, run_onnx
-    
-for i, data in enumerate(dataset):
+
+iter_dataloader = iter(dataset)
+# for i, data in enumerate(dataset):
+for i in tqdm(range(len(dataset))):
+    data = next(iter_dataloader)
     if i >= opt.how_many:
         break
     if opt.data_type == 16:
@@ -287,45 +70,40 @@ for i, data in enumerate(dataset):
     elif opt.onnx:
         generated = run_onnx(opt.onnx, opt.data_type, minibatch, [data['label'], data['inst']])
     else:
-        print(data['label'])
-        print(data['label'].shape)
-        # import torch.nn.functional as F
-        # data['label'] = F.interpolate(data['label'], size=(256, 512))
-        # print(data['label'].shape)
-        # print(data['inst'])
-        # data['inst'] = F.interpolate(data['inst'].float(), size=(256, 512)).int()
-        # data['label'] = data['label'][:, :, :256, :512]
-        # data['inst'] = data['inst'][:, :, :256, :512]
-        # data['image'] = data['image'][:, :, :256, :512]
-        times = []
-        for i in range(10):
-            import time
-            start = time.time()
-            with torch.no_grad():
-                generated = model.inference(data['label'], data['inst'], data['image'])
-            torch.cuda.synchronize(device='cuda')
-            end = time.time()
-            f_time = end-start
-            times.append(f_time)
-        print('time:', min(times))
-            
-        
-    visuals = OrderedDict([('input_label', util.tensor2label(data['label'][0], opt.label_nc)),
-                           ('synthesized_image', util.tensor2im(generated.data[0]))])
-    img_path = data['path']
-    print('process image... %s' % img_path)
-    visualizer.save_images(webpage, visuals, img_path)
+        start = time.time()
+        with torch.no_grad():
+            generated = model.inference(data['label'], data['inst'], data['image'])
+        torch.cuda.synchronize(device='cuda')
+        end = time.time()
+        f_time = end-start
+        if i != 0:
+            time_total += f_time
     
-    fid = calculate_fretchet((data['image'] + 1) / 2, (generated + 1) / 2, model_InceptionV3)
-    print('FID:', fid)
-    from ignite.metrics import PSNR, SSIM
-    psnr = PSNR(data_range=2)
-    print(generated.min(), generated.max())
-    print(data['image'].min(), data['image'].max())
-    psnr.update([generated, data['image'].cuda()])
-    print('PSNR:', psnr.compute())
-    ssim = SSIM(data_range=2)
-    ssim.update([generated, data['image'].cuda()])
-    print('SSIM:', ssim.compute())
-
+    metric_fid.update([generated, data['image'].cuda()])
+    metric_psnr.update([generated, data['image'].cuda()])
+    metric_ssim.update([generated, data['image'].cuda()])
+    
+    img_path = data['path']
+    for b in range(generated.shape[0]):
+        visuals = OrderedDict([('input_label', util.tensor2label(data['label'][b], opt.label_nc)),
+                                ('gt', util.tensor2im(data['image'][b])),
+                                ('synthesized_image', util.tensor2im(generated.data[b]))])
+        visualizer.save_images(webpage, visuals, img_path[b:b + 1])
+    
 webpage.save()
+
+print(f'mean FID = {metric_fid.compute()}')
+print(f'mean PSNR = {metric_psnr.compute()}')
+print(f'mean SSIM = {metric_ssim.compute()}')
+
+print(f'average time per image = {time_total / i}')
+print(f'average image per second = {i / time_total}')
+
+result_file_path = os.path.join(opt.results_dir, opt.name, f'{opt.phase}_{opt.which_epoch}', 'results.log')
+with open(result_file_path, 'w') as f:
+    f.write(f'mean FID = {metric_fid.compute()}\n')
+    f.write(f'mean PSNR = {metric_psnr.compute()}\n')
+    f.write(f'mean SSIM = {metric_ssim.compute()}\n')
+    
+    f.write(f'average time per image = {time_total / i}\n')
+    f.write(f'average image per second = {i / time_total}\n')
