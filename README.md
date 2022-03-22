@@ -113,6 +113,10 @@ The summary of perforamnce and comparison of models.
 | PSNR    | 15.46   | 16.42     |
 | SSIM    | 0.45    | 0.52      |
 
+Visual comparison:
+
+![results](https://raw.githubusercontent.com/lionelsnaw/ASAPNet_experiments/main/results.png)
+
 |         | DeblurGAN | ASAPNet Deblur |
 |---------|-----------|----------------|
 | FID     | 8.6       | 66.21          |
@@ -121,6 +125,7 @@ The summary of perforamnce and comparison of models.
 
 Visual comparison:
 
-![results](https://raw.githubusercontent.com/lionelsnaw/ASAPNet_experiments/main/results.png)
+![results2](https://raw.githubusercontent.com/lionelsnaw/ASAPNet_experiments/main/results2.jpeg)
+
 
 ## Credits
