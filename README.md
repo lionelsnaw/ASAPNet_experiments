@@ -121,6 +121,6 @@ The summary of perforamnce and comparison of models.
 
 Visual comparison:
 
-
+![results](https://raw.githubusercontent.com/lionelsnaw/ASAPNet_experiments/main/results.png)
 
 ## Credits
